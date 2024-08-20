@@ -18,6 +18,7 @@ package updater
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -26,8 +27,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	pkgClient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/operator-framework/helm-operator-plugins/pkg/reconciler/internal/conditions"
 )
@@ -36,13 +38,14 @@ const testFinalizer = "testFinalizer"
 
 var _ = Describe("Updater", func() {
 	var (
-		client client.Client
-		u      Updater
-		obj    *unstructured.Unstructured
+		client         pkgClient.Client
+		u              Updater
+		obj            *unstructured.Unstructured
+		interceptFuncs interceptor.Funcs
 	)
 
-	BeforeEach(func() {
-		client = fake.NewClientBuilder().Build()
+	JustBeforeEach(func() {
+		client = fake.NewClientBuilder().WithInterceptorFuncs(interceptFuncs).Build()
 		u = New(client)
 		obj = &unstructured.Unstructured{Object: map[string]interface{}{
 			"apiVersion": "apps/v1",
@@ -70,6 +73,19 @@ var _ = Describe("Updater", func() {
 	})
 
 	When("an update is a change", func() {
+		var updateCallCount int
+
+		BeforeEach(func() {
+			// On the first update of (status) subresource, return an error. After that do what is expected.
+			interceptFuncs.SubResourceUpdate = func(ctx context.Context, client pkgClient.Client, subResourceName string, obj pkgClient.Object, opts ...pkgClient.SubResourceUpdateOption) error {
+				updateCallCount += 1
+				if updateCallCount == 1 {
+					return errors.New("boom")
+				}
+				return client.SubResource(subResourceName).Update(ctx, obj, opts...)
+			}
+		})
+
 		It("should apply an update function", func() {
 			u.Update(func(u *unstructured.Unstructured) bool {
 				u.SetAnnotations(map[string]string{"foo": "bar"})
